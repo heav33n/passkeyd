@@ -113,11 +113,24 @@ class TestCtap2(unittest.TestCase):
         c = make_cred()
         ap = FakeApprover()
         cdh = os.urandom(32)
-        status, r = call(Authenticator(FakeVault([c]), ap), 0x02, ga(cdh=cdh, opts={"up": False}))
+        status, r = call(Authenticator(FakeVault([c]), ap), 0x02,
+                         ga(cdh=cdh, allow=[c.credential_id], opts={"up": False}))
         self.assertEqual(status, OK)
         self.assertEqual(r[2][32], 0x18)
         verify_sig(c, r, cdh)
+        self.assertNotIn(4, r)  # no user identity without the fingerprint
         self.assertEqual((ap.pick_calls, ap.verify_calls), ([], []))
+
+    def test_up_false_discoverable_reveals_nothing(self):
+        ap = FakeApprover()
+        status, r = call(Authenticator(FakeVault([make_cred()]), ap), 0x02, ga(opts={"up": False}))
+        self.assertEqual((status, r), (ERR_NO_CREDENTIALS, None))
+        self.assertEqual((ap.pick_calls, ap.verify_calls), ([], []))
+
+    def test_logs_do_not_contain_user_name(self):
+        with self.assertLogs("passkeyd.ctap2", level="DEBUG") as logs:
+            call(Authenticator(FakeVault([make_cred(user="secret@mail")]), FakeApprover()), 0x02, ga())
+        self.assertFalse(any("secret@mail" in line for line in logs.output))
 
     def test_fingerprint_failed(self):
         status, _ = call(Authenticator(FakeVault([make_cred()]), FakeApprover(verify_result=False)),

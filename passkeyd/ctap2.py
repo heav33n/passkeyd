@@ -70,6 +70,10 @@ class Authenticator:
             return ERR_NO_CREDENTIALS, None
 
         if not up:
+            # Silent probes are only for checking a site-named key; never reveal
+            # which accounts exist for a site without the fingerprint.
+            if not allow:
+                return ERR_NO_CREDENTIALS, None
             cred, flags = creds[0], FLAG_BE | FLAG_BS
         else:
             try:
@@ -85,11 +89,11 @@ class Authenticator:
 
         auth_data = sha256(rp_id.encode()).digest() + bytes([flags]) + struct.pack(">I", cred.counter)
         sig = cred.private_key.sign(auth_data + cdh, ec.ECDSA(hashes.SHA256()))
-        resp = {1: {"type": "public-key", "id": cred.credential_id}, 2: auth_data, 3: sig,
-                4: {"id": cred.user_handle, "name": cred.user_name,
-                    "displayName": cred.display_name}}
+        resp = {1: {"type": "public-key", "id": cred.credential_id}, 2: auth_data, 3: sig}
+        if up:
+            resp[4] = {"id": cred.user_handle, "name": cred.user_name,
+                       "displayName": cred.display_name}
+            log.info("signed in to %s", rp_id)
         if not allow:
             resp[6] = True  # userSelected: we already chose the account
-        if up:
-            log.info("signed in to %s as %s", rp_id, cred.user_name)
         return OK, resp
