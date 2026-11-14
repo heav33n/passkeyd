@@ -36,7 +36,7 @@ class TestDaemon(unittest.TestCase):
             threading.Event())
         self.assertEqual(out, bytes([ERR_NO_CREDENTIALS]))
         self.assertEqual(len(ap.notes), 1)
-        self.assertIn("passkeyd setup", ap.notes[0])
+        self.assertIn("python3 -m passkeyd setup", ap.notes[0])
 
     def test_setup_saves_without_printing_token(self):
         saved = []

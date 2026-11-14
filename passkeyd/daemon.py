@@ -19,7 +19,7 @@ from .vault import BwRunner, Vault, VaultLocked, setup_session
 
 log = logging.getLogger("passkeyd")
 
-LOCKED_HINT = "Bitwarden is locked — run: passkeyd setup"
+LOCKED_HINT = "Bitwarden is locked — run: cd ~/passkeyd && python3 -m passkeyd setup"
 RESYNC_TICK = 60.0
 
 

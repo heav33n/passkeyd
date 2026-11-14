@@ -1,6 +1,8 @@
 import base64
 import json
 import subprocess
+import threading
+import time
 import unittest
 import uuid
 
@@ -8,7 +10,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat
 
-from passkeyd.vault import (BwRunner, Vault, VaultLocked, decode_credential_id, parse_items,
+from passkeyd.vault import (BwError, BwRunner, Vault, VaultLocked, decode_credential_id, parse_items,
                             setup_session)
 
 
@@ -141,10 +143,45 @@ class TestVault(unittest.TestCase):
         v.maybe_resync(no_match=False)
         self.assertEqual(syncs(), 3)
 
-    def test_find_no_match_triggers_resync(self):
+    def test_find_no_match_answers_now_and_resyncs_in_background(self):
         v, runner, _, _ = self.make([])
         runner.items = [item("d", fido())]
+        self.assertEqual(v.find("discord.com", set()), [])
+        v.wait_idle(2)
         self.assertEqual(len(v.find("discord.com", set())), 1)
+
+    def test_find_not_blocked_by_slow_sync(self):
+        v, runner, _, _ = self.make([item("d", fido())])
+        v.sync()
+        release = threading.Event()
+        orig = runner.run
+
+        def slow(args, extra_env=None):
+            if args[:1] == ["sync"]:
+                release.wait(5)
+            return orig(args, extra_env)
+        runner.run = slow
+        t = threading.Thread(target=v.sync)
+        t.start()
+        time.sleep(0.05)
+        start = time.monotonic()
+        self.assertEqual(len(v.find("discord.com", set())), 1)
+        self.assertLess(time.monotonic() - start, 0.5)
+        release.set()
+        t.join()
+
+    def test_locked_notifies_again_on_failed_signin(self):
+        v, runner, clock, locked = self.make([])
+        runner.locked = True
+        v.sync()
+        self.assertEqual(locked, [1])
+        clock.t = 10
+        v.find("discord.com", set())
+        self.assertEqual(locked, [1])
+        clock.t = 70
+        v.find("discord.com", set())
+        v.wait_idle(2)
+        self.assertEqual(len(locked), 2)
 
 
 class FakeRun:
@@ -185,6 +222,13 @@ class TestRunner(unittest.TestCase):
         with self.assertLogs("passkeyd.vault", level="WARNING") as logs:
             parse_items([item("my-secret-bank", fido(key="garbage"))])
         self.assertFalse(any("my-secret-bank" in line for line in logs.output))
+
+    def test_bw_timeout_is_bw_error(self):
+        def hang(args, env=None, capture_output=None, timeout=None, **kw):
+            assert timeout is not None, "bw called without a timeout"
+            raise subprocess.TimeoutExpired(args, timeout)
+        with self.assertRaises(BwError):
+            BwRunner(lambda: "t", run=hang).run(["sync"])
 
     def test_locked_message_is_locked(self):
         fr = FakeRun(stdout=b"Vault is locked.", returncode=1)

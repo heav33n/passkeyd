@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 PERIODIC_RESYNC = 600.0
 NO_MATCH_RESYNC = 60.0
+BW_TIMEOUT = 30.0
 LOCKED_MARKERS = ("vault is locked", "not logged in", "you are not logged in", "invalid session")
 
 
@@ -72,7 +73,11 @@ class BwRunner:
         if not session:
             raise VaultLocked("no Bitwarden session stored")
         env = {**os.environ, **(extra_env or {}), "BW_SESSION": session}
-        p = self._run([self.bw, *args, "--nointeraction"], env=env, capture_output=True)
+        try:
+            p = self._run([self.bw, *args, "--nointeraction"], env=env, capture_output=True,
+                          timeout=BW_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            raise BwError(f"bw {args[0]} timed out after {BW_TIMEOUT:.0f}s") from None
         if p.returncode != 0:
             # Only inspect output of a failed call: successful stdout is vault content.
             text = (p.stdout + p.stderr).decode(errors="replace").lower()
@@ -96,58 +101,91 @@ class Vault:
                  clock: Callable[[], float] = time.monotonic):
         self.runner, self.on_locked, self.clock = runner, on_locked, clock
         self._creds: list[Credential] = []
-        self._lock = threading.RLock()
+        self._lock = threading.Lock()          # guards state only, never held during bw I/O
+        self._idle = threading.Event()
+        self._idle.set()
         self._last_sync: float | None = None
         self._last_no_match: float | None = None
+        self._last_locked_notice: float | None = None
         self._locked = False
 
     @property
     def count(self) -> int:
         return len(self._creds)
 
-    def _filter(self, rp_id, allow):
-        return [c for c in self._creds if c.rp_id == rp_id
-                and (not allow or c.credential_id in allow)]
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        return self._idle.wait(timeout)
 
     def find(self, rp_id: str, allow: set[bytes]) -> list[Credential]:
         with self._lock:
-            found = self._filter(rp_id, allow)
-            if not found:
-                self.maybe_resync(no_match=True)
-                found = self._filter(rp_id, allow)
-            return found
+            found = [c for c in self._creds if c.rp_id == rp_id
+                     and (not allow or c.credential_id in allow)]
+            locked = self._locked
+        if not found:
+            # Answer now (fail fast); refresh in the background for the next try.
+            if locked:
+                self._notify_locked()
+            self.maybe_resync(no_match=True, background=True)
+        return found
 
-    def maybe_resync(self, no_match: bool) -> None:
+    def maybe_resync(self, no_match: bool, background: bool = False) -> None:
+        now = self.clock()
         with self._lock:
-            now = self.clock()
             if no_match:
-                if self._last_no_match is None or now - self._last_no_match >= NO_MATCH_RESYNC:
+                due = self._last_no_match is None or now - self._last_no_match >= NO_MATCH_RESYNC
+                if due:
                     self._last_no_match = now
-                    self.sync()
-            elif self._last_sync is None or now - self._last_sync >= PERIODIC_RESYNC:
-                self.sync()
+            else:
+                due = self._last_sync is None or now - self._last_sync >= PERIODIC_RESYNC
+        if not due:
+            return
+        if background:
+            threading.Thread(target=self.sync, daemon=True).start()
+        else:
+            self.sync()
+
+    def _notify_locked(self) -> None:
+        now = self.clock()
+        with self._lock:
+            if (self._last_locked_notice is not None
+                    and now - self._last_locked_notice < NO_MATCH_RESYNC):
+                return
+            self._last_locked_notice = now
+        self.on_locked()
 
     def sync(self) -> None:
         with self._lock:
+            if not self._idle.is_set():
+                return  # a sync is already running
+            self._idle.clear()
             self._last_sync = self.clock()
+        try:
+            self._sync_unlocked()
+        finally:
+            self._idle.set()
+
+    def _sync_unlocked(self) -> None:
+        try:
             try:
-                try:
-                    self.runner.run(["sync"])
-                except VaultLocked:
-                    raise
-                except Exception as e:  # offline etc.: fall back to the local copy
-                    log.warning("bw sync failed, using local vault copy: %s", e)
-                items = json.loads(self.runner.run(["list", "items"]))
+                self.runner.run(["sync"])
             except VaultLocked:
+                raise
+            except Exception as e:  # offline etc.: fall back to the local copy
+                log.warning("bw sync failed, using local vault copy: %s", e)
+            items = json.loads(self.runner.run(["list", "items"]))
+        except VaultLocked:
+            with self._lock:
                 self._creds = []
-                if not self._locked:
-                    self._locked = True
-                    log.warning("Bitwarden is locked; passkeys unavailable")
-                    self.on_locked()
-                return
-            except Exception as e:
-                log.warning("could not read vault, keeping previous passkeys: %s", e)
-                return
+                was_locked, self._locked = self._locked, True
+            if not was_locked:
+                log.warning("Bitwarden is locked; passkeys unavailable")
+                self._notify_locked()
+            return
+        except Exception as e:
+            log.warning("could not read vault, keeping previous passkeys: %s", e)
+            return
+        creds = parse_items(items)
+        with self._lock:
             self._locked = False
-            self._creds = parse_items(items)
-            log.info("loaded %d passkeys", len(self._creds))
+            self._creds = creds
+        log.info("loaded %d passkeys", len(creds))
