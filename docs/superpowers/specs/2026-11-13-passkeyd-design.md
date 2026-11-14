@@ -73,7 +73,7 @@ CTAP2 over HID to it. The daemon does what Windows Hello does itself:
   `secretstorage`, GTK4 available. `zenity` installed. Bitwarden CLI
   standalone binary at `~/.local/bin/bw`, logged in.
 - Secret Service (`org.freedesktop.secrets`) is available on the session bus.
-- fprintd with a Goodix MOC sensor; right index finger enrolled.
+- fprintd with a working sensor and an enrolled finger.
 
 ## Coexistence with other authenticators (decided)
 
