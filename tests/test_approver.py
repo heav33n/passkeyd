@@ -80,6 +80,24 @@ class TestPick(unittest.TestCase):
                                                             threading.Event()))
 
 
+class TestSanitize(unittest.TestCase):
+    def test_hostile_values_cannot_become_options_or_markup(self):
+        sp = Spawner(list=[{"out": b"1\n"}], info=[FOREVER], fprintd=[{"out": MATCH}])
+        evil = cred("--print-column=ALL", "--width=1")
+        evil.display_name = "<b>Bank</b>\nline2\x07"
+        ap = Approver(spawn=sp, poll=0)
+        ap.pick("--html", [evil, cred("b", "2")], threading.Event())
+        ap.verify("x.com\n\nThis is a system dialog", evil, threading.Event())
+        list_args = sp.of("list")[0].args
+        values = list_args[list_args.index("--height") + 2:]
+        self.assertFalse(any(v.startswith("-") for v in values), values)
+        self.assertFalse(any("\n" in a or "\x07" in a for a in list_args))
+        self.assertNotIn("--html", list_args)
+        info_args = sp.of("info")[0].args
+        self.assertIn("--no-markup", info_args)
+        self.assertFalse(any("\n" in a for a in info_args))
+
+
 class TestVerify(unittest.TestCase):
     def test_verify_match_first_try(self):
         sp = Spawner(info=[FOREVER], fprintd=[{"out": MATCH, "polls": 3}])

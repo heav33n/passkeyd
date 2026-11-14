@@ -1,0 +1,12 @@
+[Unit]
+Description=passkeyd - Bitwarden passkeys as a virtual FIDO2 security key
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+WorkingDirectory=%h/passkeyd
+ExecStart=/usr/bin/python3 -m passkeyd run
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

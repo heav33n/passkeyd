@@ -4,6 +4,7 @@ import re
 import subprocess
 import threading
 import time
+import unicodedata
 
 from .model import Cancelled, Credential
 
@@ -11,6 +12,14 @@ log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
 MATCH_RE = re.compile(r"Verify result: verify-match\b")
+
+
+def clean(value: str, limit: int = 80) -> str:
+    """Make app/site-supplied text safe to show in zenity: no control chars or
+    newlines, bounded length, and never parseable as a command-line option."""
+    text = "".join(ch if unicodedata.category(ch)[0] != "C" else " " for ch in value)
+    text = " ".join(text.split())[:limit]
+    return " " + text if text.startswith("-") else text
 
 
 class Approver:
@@ -50,13 +59,14 @@ class Approver:
 
     # ---- ApproverLike ---------------------------------------------------
     def pick(self, rp_id: str, creds: list[Credential], cancel: threading.Event) -> Credential | None:
-        args = ["zenity", "--list", "--title", f"Sign in to {rp_id}",
+        args = ["zenity", "--list", "--title", f"Sign in to {clean(rp_id)}",
                 "--text", "Choose the account to sign in with",
                 "--column", "#", "--column", "User", "--column", "Name",
                 "--column", "Vault item", "--column", "Created",
                 "--hide-column", "1", "--print-column", "1", "--width", "640", "--height", "320"]
         for i, c in enumerate(creds, 1):
-            args += [str(i), c.user_name, c.display_name, c.item_name, c.created]
+            args += [str(i), clean(c.user_name), clean(c.display_name), clean(c.item_name),
+                     clean(c.created)]
         p = self.spawn(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         try:
             while p.poll() is None:
@@ -75,8 +85,9 @@ class Approver:
 
     def verify(self, rp_id: str, cred: Credential, cancel: threading.Event) -> bool:
         dialog = self.spawn(
-            ["zenity", "--info", "--title", "passkeyd", "--no-wrap", "--ok-label", "Cancel",
-             "--text", f"Touch the fingerprint sensor to sign in to {rp_id} as {cred.user_name}"],
+            ["zenity", "--info", "--title", "passkeyd", "--no-wrap", "--no-markup",
+             "--ok-label", "Cancel", "--text",
+             f"Touch the fingerprint sensor to sign in to {clean(rp_id)} as {clean(cred.user_name)}"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         fp = None
         try:
