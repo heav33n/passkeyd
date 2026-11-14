@@ -44,7 +44,7 @@ def decode_credential_id(s: str) -> bytes:
 
 def parse_items(items: list[dict]) -> list[Credential]:
     creds = []
-    for it in items:
+    for index, it in enumerate(items):
         for fc in ((it.get("login") or {}).get("fido2Credentials") or []):
             try:
                 key = load_der_private_key(_b64u(fc["keyValue"]), None)
@@ -58,7 +58,7 @@ def parse_items(items: list[dict]) -> list[Credential]:
                     item_name=it.get("name") or "", created=(fc.get("creationDate") or "")[:10],
                     counter=int(fc.get("counter") or 0)))
             except Exception as e:
-                log.warning("skipping a passkey in item %r: %s", it.get("name"), type(e).__name__)
+                log.warning("skipping a passkey in vault item #%d: %s", index, type(e).__name__)
     return creds
 
 
@@ -73,10 +73,11 @@ class BwRunner:
             raise VaultLocked("no Bitwarden session stored")
         env = {**os.environ, **(extra_env or {}), "BW_SESSION": session}
         p = self._run([self.bw, *args, "--nointeraction"], env=env, capture_output=True)
-        text = (p.stdout + p.stderr).decode(errors="replace").lower()
-        if any(m in text for m in LOCKED_MARKERS):
-            raise VaultLocked("Bitwarden vault is locked")
         if p.returncode != 0:
+            # Only inspect output of a failed call: successful stdout is vault content.
+            text = (p.stdout + p.stderr).decode(errors="replace").lower()
+            if any(m in text for m in LOCKED_MARKERS):
+                raise VaultLocked("Bitwarden vault is locked")
             raise BwError(f"bw {args[0]} failed (exit {p.returncode})")
         return p.stdout
 

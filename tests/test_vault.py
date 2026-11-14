@@ -177,6 +177,15 @@ class TestRunner(unittest.TestCase):
         with self.assertRaises(VaultLocked):
             BwRunner(lambda: None, run=FakeRun()).run(["list", "items"])
 
+    def test_vault_content_mentioning_lock_is_not_locked(self):
+        fr = FakeRun(stdout=b'[{"name": "Vault is locked", "notes": "not logged in"}]', returncode=0)
+        self.assertIn(b"Vault is locked", BwRunner(lambda: "t", run=fr).run(["list", "items"]))
+
+    def test_skipped_item_name_not_logged(self):
+        with self.assertLogs("passkeyd.vault", level="WARNING") as logs:
+            parse_items([item("my-secret-bank", fido(key="garbage"))])
+        self.assertFalse(any("my-secret-bank" in line for line in logs.output))
+
     def test_locked_message_is_locked(self):
         fr = FakeRun(stdout=b"Vault is locked.", returncode=1)
         with self.assertRaises(VaultLocked):
